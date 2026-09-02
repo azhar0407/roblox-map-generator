@@ -24,6 +24,13 @@ function validate(raw){
 }
 function parseContent(s){s=String(s||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');return JSON.parse(s);}
 function extractPlaceId(link){try{const u=new URL(link),m=u.pathname.match(/^\/games\/(\d+)(?:\/|$)/i)||u.pathname.match(/^\/store\/asset\/(\d+)(?:\/|$)/i);return m?Number(m[1]):null}catch{return null}}
+function parseRbxlxSummary(xml){
+ if(typeof xml==='string'&&xml.length>600000)throw new Error('RBXLX terlalu besar; maksimum 600 KB');
+ if(typeof xml!=='string'||!/<roblox\b[^>]*version=/i.test(xml)||!/<Item\b/i.test(xml))throw new Error('File bukan RBXLX XML valid');
+ const dec=s=>String(s||'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&');
+ const classCounts={},parts=[],scripts=[];for(const m of xml.matchAll(/<Item\s+class="([^"]+)"[^>]*>([\s\S]*?)(?=<Item\s|<\/Item>)/g)){const cls=m[1],b=m[2];classCounts[cls]=(classCounts[cls]||0)+1;const name=dec(b.match(/<string\s+name="Name">([\s\S]*?)<\/string>/)?.[1]||cls);if(/^(Part|MeshPart|WedgePart|SpawnLocation|Model)$/.test(cls)&&parts.length<120){const size=b.match(/<Vector3\s+name="size"><X>([^<]+)<\/X><Y>([^<]+)<\/Y><Z>([^<]+)<\/Z>/),pos=b.match(/<CoordinateFrame\s+name="CFrame"><X>([^<]+)<\/X><Y>([^<]+)<\/Y><Z>([^<]+)<\/Z>/);parts.push(`${cls} ${name} size=${size?size.slice(1).join(','):'?'} pos=${pos?pos.slice(1).join(','):'?'}`)}if(/^(Script|LocalScript|ModuleScript)$/.test(cls)&&scripts.length<20){const src=dec(b.match(/<(?:ProtectedString|string)\s+name="Source">(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/(?:ProtectedString|string)>/)?.[1]||'').replace(/\s+/g,' ').slice(0,1400);scripts.push(`${cls} ${name}: ${src}`)}}
+ return{classCounts,parts,scripts};
+}
 async function getReferenceContext(link,fetcher=fetch){
  const placeId=extractPlaceId(link);if(!placeId)throw new Error('Link harus menuju halaman game Roblox');
  const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),10000);
@@ -42,18 +49,19 @@ export default{async fetch(req,env){
  if(req.method!=='POST'||new URL(req.url).pathname!=='/generate')return json({error:'Not found'},404,h);
  const ip=req.headers.get('cf-connecting-ip')||req.headers.get('x-forwarded-for')||'local';if(limited(ip))return json({error:'Terlalu banyak permintaan. Coba lagi satu menit.'},429,h);
  let body;try{body=await req.json()}catch{return json({error:'JSON tidak valid'},400,h)}
- const prompt=cleanText(body.prompt,1200),reference=cleanText(body.reference,500);
+ const prompt=cleanText(body.prompt,1200),reference=cleanText(body.reference,500),rbxlx=body.rbxlx?parseRbxlxSummary(body.rbxlx):null;
  if(prompt.length<8)return json({error:'Prompt minimal 8 karakter'},400,h);
  if(reference&&(!/^https:\/\/(www\.)?roblox\.com\//i.test(reference)&&!/^https:\/\/create\.roblox\.com\//i.test(reference)))return json({error:'Referensi harus link roblox.com'},400,h);
  if(!env.OPENROUTER_API_KEY)return json({error:'Server belum memiliki API key'},500,h);
  try{
   let ref=null;if(reference)ref=await getReferenceContext(reference);
   const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),55000);
-  const refText=ref?`REFERENSI ADALAH PRIORITAS UTAMA. Pertahankan tipe game, tema, atmosfer, warna, objek khas, dan struktur progres berdasarkan data resmi berikut. Prompt pengguna hanya perubahan tambahan jika tidak bertentangan.\nNama: ${ref.name}\nDeskripsi: ${ref.description}\nPembuat: ${ref.builder}\nURL: ${reference}`:'';
-  const content=[];if(ref?.thumbnail)content.push({type:'image_url',image_url:{url:ref.thumbnail}});content.push({type:'text',text:(refText?refText+'\n\nINSTRUKSI TAMBAHAN USER:\n':'')+prompt});
+  const refText=ref?`REFERENSI LINK ADALAH PRIORITAS TEMA. Pertahankan tipe game, tema, atmosfer, warna, objek khas, dan struktur progres berdasarkan data resmi berikut.\nNama: ${ref.name}\nDeskripsi: ${ref.description}\nPembuat: ${ref.builder}\nURL: ${reference}`:'';
+  const fileText=rbxlx?`REFERENSI FILE RBXLX ADALAH PRIORITAS STRUKTUR TERTINGGI. Tiru pola hierarchy, skala, posisi relatif, penamaan, dan mekanik script; buat implementasi baru, jangan salin kode sumber mentah.\nClass counts: ${JSON.stringify(rbxlx.classCounts)}\nParts:\n${rbxlx.parts.join('\n')}\nScript mechanics:\n${rbxlx.scripts.join('\n')}`:'';
+  const content=[];if(ref?.thumbnail)content.push({type:'image_url',image_url:{url:ref.thumbnail}});content.push({type:'text',text:[fileText,refText,'INSTRUKSI TAMBAHAN USER:\n'+prompt].filter(Boolean).join('\n\n')});
   const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',signal:ctrl.signal,headers:{'Authorization':'Bearer '+env.OPENROUTER_API_KEY,'Content-Type':'application/json','HTTP-Referer':'https://azhar0407.github.io/roblox-map-generator/','X-Title':'Roblox Map Generator'},body:JSON.stringify({model:'openrouter/free',messages:[{role:'system',content:SYSTEM},{role:'user',content}],response_format:{type:'json_object'},temperature:.45,max_tokens:8000})});clearTimeout(timer);
   const data=await r.json();if(!r.ok)throw new Error(data?.error?.message||'OpenRouter gagal: '+r.status);
   const map=validate(parseContent(data?.choices?.[0]?.message?.content));return json({map,model:data.model||'openrouter/free'},200,h);
  }catch(e){return json({error:e.name==='AbortError'?'AI timeout. Coba lagi.':cleanText(e.message,200)||'Generate gagal'},502,h)}
 }};
-export{validate,parseContent,extractPlaceId,getReferenceContext};
+export{validate,parseContent,extractPlaceId,getReferenceContext,parseRbxlxSummary};
