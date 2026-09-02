@@ -23,6 +23,18 @@ function validate(raw){
  return{title:cleanText(raw.title,80)||'Generated Map',description:cleanText(raw.description,240),parts,features:{checkpoints:!!raw.features?.checkpoints,winner:!!raw.features?.winner,leaderboard:!!raw.features?.leaderboard}};
 }
 function parseContent(s){s=String(s||'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');return JSON.parse(s);}
+function extractPlaceId(link){try{const u=new URL(link),m=u.pathname.match(/^\/games\/(\d+)(?:\/|$)/i)||u.pathname.match(/^\/store\/asset\/(\d+)(?:\/|$)/i);return m?Number(m[1]):null}catch{return null}}
+async function getReferenceContext(link,fetcher=fetch){
+ const placeId=extractPlaceId(link);if(!placeId)throw new Error('Link harus menuju halaman game Roblox');
+ const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),10000);
+ try{
+  const metaRes=await fetcher('https://games.roblox.com/v1/games/multiget-place-details?placeIds='+placeId,{signal:ctrl.signal});if(!metaRes.ok)throw new Error('Metadata referensi tidak tersedia');
+  const meta=(await metaRes.json())?.[0];if(!meta)throw new Error('Game referensi tidak ditemukan');
+  const thumbRes=await fetcher('https://thumbnails.roblox.com/v1/games/icons?universeIds='+meta.universeId+'&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false',{signal:ctrl.signal});
+  const thumbnail=thumbRes.ok?(await thumbRes.json())?.data?.[0]?.imageUrl||'':'';
+  return{placeId,name:cleanText(meta.name,100),description:cleanText(meta.description,1000),builder:cleanText(meta.builder,80),universeId:meta.universeId,thumbnail};
+ }finally{clearTimeout(timer)}
+}
 export default{async fetch(req,env){
  const h=cors(req);if(req.method==='OPTIONS')return new Response(null,{status:204,headers:h});
  if(req.method!=='POST'||new URL(req.url).pathname!=='/generate')return json({error:'Not found'},404,h);
@@ -33,10 +45,13 @@ export default{async fetch(req,env){
  if(reference&&(!/^https:\/\/(www\.)?roblox\.com\//i.test(reference)&&!/^https:\/\/create\.roblox\.com\//i.test(reference)))return json({error:'Referensi harus link roblox.com'},400,h);
  if(!env.OPENROUTER_API_KEY)return json({error:'Server belum memiliki API key'},500,h);
  try{
+  let ref=null;if(reference)ref=await getReferenceContext(reference);
   const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),55000);
-  const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',signal:ctrl.signal,headers:{'Authorization':'Bearer '+env.OPENROUTER_API_KEY,'Content-Type':'application/json','HTTP-Referer':'https://azhar0407.github.io/roblox-map-generator/','X-Title':'Roblox Map Generator'},body:JSON.stringify({model:'openrouter/free',messages:[{role:'system',content:SYSTEM},{role:'user',content:prompt+(reference?'\nReferensi gaya (metadata/link saja, jangan menyalin asset): '+reference:'')}],response_format:{type:'json_object'},temperature:.65,max_tokens:8000})});clearTimeout(timer);
+  const refText=ref?`REFERENSI ADALAH PRIORITAS UTAMA. Pertahankan tipe game, tema, atmosfer, warna, objek khas, dan struktur progres berdasarkan data resmi berikut. Prompt pengguna hanya perubahan tambahan jika tidak bertentangan.\nNama: ${ref.name}\nDeskripsi: ${ref.description}\nPembuat: ${ref.builder}\nURL: ${reference}`:'';
+  const content=[];if(ref?.thumbnail)content.push({type:'image_url',image_url:{url:ref.thumbnail}});content.push({type:'text',text:(refText?refText+'\n\nINSTRUKSI TAMBAHAN USER:\n':'')+prompt});
+  const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',signal:ctrl.signal,headers:{'Authorization':'Bearer '+env.OPENROUTER_API_KEY,'Content-Type':'application/json','HTTP-Referer':'https://azhar0407.github.io/roblox-map-generator/','X-Title':'Roblox Map Generator'},body:JSON.stringify({model:'openrouter/free',messages:[{role:'system',content:SYSTEM},{role:'user',content}],response_format:{type:'json_object'},temperature:.45,max_tokens:8000})});clearTimeout(timer);
   const data=await r.json();if(!r.ok)throw new Error(data?.error?.message||'OpenRouter gagal: '+r.status);
   const map=validate(parseContent(data?.choices?.[0]?.message?.content));return json({map,model:data.model||'openrouter/free'},200,h);
  }catch(e){return json({error:e.name==='AbortError'?'AI timeout. Coba lagi.':cleanText(e.message,200)||'Generate gagal'},502,h)}
 }};
-export{validate,parseContent};
+export{validate,parseContent,extractPlaceId,getReferenceContext};
