@@ -28,11 +28,13 @@ async function getReferenceContext(link,fetcher=fetch){
  const placeId=extractPlaceId(link);if(!placeId)throw new Error('Link harus menuju halaman game Roblox');
  const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),10000);
  try{
-  const metaRes=await fetcher('https://games.roblox.com/v1/games/multiget-place-details?placeIds='+placeId,{signal:ctrl.signal});if(!metaRes.ok)throw new Error('Metadata referensi tidak tersedia');
-  const meta=(await metaRes.json())?.[0];if(!meta)throw new Error('Game referensi tidak ditemukan');
-  const thumbRes=await fetcher('https://thumbnails.roblox.com/v1/games/icons?universeIds='+meta.universeId+'&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false',{signal:ctrl.signal});
+  const universeRes=await fetcher('https://apis.roblox.com/universes/v1/places/'+placeId+'/universe',{signal:ctrl.signal});if(!universeRes.ok)throw new Error('Game referensi tidak ditemukan');
+  const universeId=(await universeRes.json())?.universeId;if(!universeId)throw new Error('Universe referensi tidak ditemukan');
+  const metaRes=await fetcher('https://games.roblox.com/v1/games?universeIds='+universeId,{signal:ctrl.signal});if(!metaRes.ok)throw new Error('Metadata referensi tidak tersedia');
+  const meta=(await metaRes.json())?.data?.[0];if(!meta)throw new Error('Metadata game kosong');
+  const thumbRes=await fetcher('https://thumbnails.roblox.com/v1/games/icons?universeIds='+universeId+'&returnPolicy=PlaceHolder&size=512x512&format=Png&isCircular=false',{signal:ctrl.signal});
   const thumbnail=thumbRes.ok?(await thumbRes.json())?.data?.[0]?.imageUrl||'':'';
-  return{placeId,name:cleanText(meta.name,100),description:cleanText(meta.description,1000),builder:cleanText(meta.builder,80),universeId:meta.universeId,thumbnail};
+  return{placeId,name:cleanText(meta.name,100),description:cleanText(meta.description,1000),builder:cleanText(meta.creator?.name,80),universeId,thumbnail};
  }finally{clearTimeout(timer)}
 }
 export default{async fetch(req,env){
