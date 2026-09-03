@@ -49,7 +49,8 @@ export default{async fetch(req,env){
  if(req.method!=='POST'||new URL(req.url).pathname!=='/generate')return json({error:'Not found'},404,h);
  const ip=req.headers.get('cf-connecting-ip')||req.headers.get('x-forwarded-for')||'local';if(limited(ip))return json({error:'Terlalu banyak permintaan. Coba lagi satu menit.'},429,h);
  let body;try{body=await req.json()}catch{return json({error:'JSON tidak valid'},400,h)}
- const prompt=cleanText(body.prompt,1200),reference=cleanText(body.reference,500),rbxlx=body.rbxlx?parseRbxlxSummary(body.rbxlx):null;
+ const prompt=cleanText(body.prompt,1200),reference=cleanText(body.reference,500);let rbxlx=null;
+ try{if(body.rbxlx)rbxlx=typeof body.rbxlx==='string'?parseRbxlxSummary(body.rbxlx):body.rbxlx}catch(e){return json({error:cleanText(e.message,200)},400,h)}
  if(prompt.length<8)return json({error:'Prompt minimal 8 karakter'},400,h);
  if(reference&&(!/^https:\/\/(www\.)?roblox\.com\//i.test(reference)&&!/^https:\/\/create\.roblox\.com\//i.test(reference)))return json({error:'Referensi harus link roblox.com'},400,h);
  if(!env.OPENROUTER_API_KEY)return json({error:'Server belum memiliki API key'},500,h);
